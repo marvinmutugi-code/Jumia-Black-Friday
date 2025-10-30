@@ -2,10 +2,10 @@ import os
 import time
 import requests
 
-BOT_TOKEN = 8248716217:AAFlkDGIPGIIz1LHizS3OgSUdj94dp6C5-g
-CHAT_ID = -1003285979057
-AFF_CODE = 5bed0bdf3d1ca
-BITLY_TOKEN": 77a3bc0d1d8e382c9dbd2b72efc8d748c0af814b
+BOT_TOKEN = "8248716217:AAFlkDGIPGIIz1LHizS3OgSUdj94dp6C5-g"
+CHAT_ID = "-1003285979057"
+AFF_CODE = "5bed0bdf3d1ca"
+BITLY_TOKEN": "77a3bc0d1d8e382c9dbd2b72efc8d748c0af814b"
 if not BOT_TOKEN or not CHAT_ID:
     raise SystemExit("Missing BOT_TOKEN or CHAT_ID environment variable")
 
