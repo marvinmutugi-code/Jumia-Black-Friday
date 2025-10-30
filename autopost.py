@@ -5,7 +5,8 @@ import requests
 BOT_TOKEN = "8248716217:AAFlkDGIPGIIz1LHizS3OgSUdj94dp6C5-g"
 CHAT_ID = "-1003285979057"
 AFF_CODE = "5bed0bdf3d1ca"
-BITLY_TOKEN": "77a3bc0d1d8e382c9dbd2b72efc8d748c0af814b"
+BITLY_TOKEN = "77a3bc0d1d8e382c9dbd2b72efc8d748c0af814b"
+
 if not BOT_TOKEN or not CHAT_ID:
     raise SystemExit("Missing BOT_TOKEN or CHAT_ID environment variable")
 
@@ -23,3 +24,4 @@ if __name__ == "__main__":
         time.sleep(3600)  # wait 1 hour between posts
         send_deal()
 added autopost script
+fixed BITLY_TOKEN syntax
