@@ -23,5 +23,5 @@ if __name__ == "__main__":
     while True:
         time.sleep(3600)  # wait 1 hour between posts
         send_deal()
-fixed syntax error
+
 
