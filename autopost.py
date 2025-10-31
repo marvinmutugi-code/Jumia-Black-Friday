@@ -1,71 +1,112 @@
 import requests
-from bs4 import BeautifulSoup
-import random
+import schedule
 import time
+import random
+from bs4 import BeautifulSoup
 import os
-import telegram
-from dotenv import load_dotenv
 
-load_dotenv()
+# ========== CONFIGURATION ==========
+# Telegram setup
+TELEGRAM_TOKEN = "8248716217:AAFlkDGIPGIIz1LHizS3OgSUdj94dp6C5-g"
+TELEGRAM_CHAT_ID = "-1003285979057"
 
-BOT_TOKEN = "8248716217:AAFlkDGIPGIIz1LHizS3OgSUdj94dp6C5-g"
-CHAT_ID ="-1003285979057"
-AFF_ID = "5bed0bdf3d1ca"
-BITLY TOKEN="77a3bc0d1d8e382c9dbd2b72efc8d748c0af814b"
-bot = telegram.Bot(token=BOT_TOKEN)
+# Affiliate + Bitly setup
+AFFILIATE_CODE = "5bed0bdf3d1ca"
+BITLY_TOKEN = "77a3bc0d1d8e382c9dbd2b72efc8d748c0af814b"
 
-CATEGORIES = [
-    "https://www.jumia.co.ke/mlp-top-deals/",
-    "https://www.jumia.co.ke/mlp-flash-sales/",
-    "https://www.jumia.co.ke/mlp-black-friday/",
-    "https://www.jumia.co.ke/phones-tablets/",
-    "https://www.jumia.co.ke/home-office/",
-    "https://www.jumia.co.ke/supermarket/",
-    "https://www.jumia.co.ke/health-beauty/",
-    "https://www.jumia.co.ke/fashion/",
+# Categories to pull from Jumia (update as needed)
+JUMIA_CATEGORIES = [
+    "phones-tablets",
+    "computing",
+    "home-office",
+    "electronics",
+    "fashion",
+    "groceries",
+    "health-beauty",
+    "gaming"
 ]
 
-def fetch_deals(url):
+# Memory of posted deals
+posted_urls = set()
+
+# ========== FUNCTIONS ==========
+
+def shorten_link(long_url):
+    """Shorten a link using Bitly API"""
     try:
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
-        soup = BeautifulSoup(r.text, "html.parser")
-        items = soup.select("article.prd._fb.col.c-prd")
-        deals = []
-        for item in items[:5]:  # pick top 5 per category
-            title = item.select_one("h3.name").text.strip() if item.select_one("h3.name") else "No title"
-            price = item.select_one("div.prc").text.strip() if item.select_one("div.prc") else "N/A"
-            old_price = item.select_one("div.old").text.strip() if item.select_one("div.old") else "N/A"
-            discount = item.select_one("div.bdg._dsct._sm").text.strip() if item.select_one("div.bdg._dsct._sm") else ""
-            link = "https://www.jumia.co.ke" + item.select_one("a.core")["href"]
+        headers = {"Authorization": f"Bearer {BITLY_TOKEN}"}
+        json_data = {"long_url": long_url}
+        r = requests.post("https://api-ssl.bitly.com/v4/shorten", headers=headers, json=json_data)
+        return r.json().get("link", long_url)
+    except Exception:
+        return long_url
 
-            # ✅ ensure affiliate code is added correctly
-            if "?" in link:
-                link += f"&aff_id={AFF_ID}"
-            else:
-                link += f"?aff_id={AFF_ID}"
 
-            deals.append({
-                "title": title,
-                "price": price,
-                "old_price": old_price,
-                "discount": discount,
-                "link": link,
-            })
-        return deals
-    except Exception as e:
-        print(f"Error fetching from {url}: {e}")
-        return []
+def get_deals():
+    """Fetch deals from Jumia categories"""
+    all_deals = []
 
-def post_deals():
-    category = random.choice(CATEGORIES)
-    deals = fetch_deals(category)
-    random.shuffle(deals)
-    for deal in deals[:5]:  # post 5 deals every 10 min
-        message = f"🛍️ {deal['title']}\n💰 {deal['price']} (was {deal['old_price']}) {deal['discount']}\n⚡️ Top Deal from Jumia!\n🔗 [Shop Now]({deal['link']})"
-        bot.send_message(chat_id=CHAT_ID, text=message, parse_mode="Markdown", disable_web_page_preview=False)
-        time.sleep(10)  # 10s between posts
+    for category in JUMIA_CATEGORIES:
+        url = f"https://www.jumia.co.ke/{category}/?sort=popularity"
+        response = requests.get(url, timeout=15)
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        for item in soup.select("article.prd"):
+            title = item.select_one("h3.name")
+            price = item.select_one("div.prc")
+            link_tag = item.select_one("a.core")
+
+            if not (title and price and link_tag):
+                continue
+
+            product_url = "https://www.jumia.co.ke" + link_tag.get("href")
+            if product_url in posted_urls:
+                continue
+
+            # Add affiliate code
+            aff_link = f"{product_url}?aff={AFFILIATE_CODE}"
+
+            # Shorten with Bitly
+            short_url = shorten_link(aff_link)
+
+            deal = f"🔥 {title.text.strip()}\n💰 Price: {price.text.strip()}\n👉 Buy Now: {short_url}"
+            all_deals.append(deal)
+
+    # Shuffle deals to mix categories
+    random.shuffle(all_deals)
+    return all_deals[:5]
+
+
+def post_to_telegram(message):
+    """Send a message to Telegram channel"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+    requests.post(url, data=payload)
+
+
+def autopost():
+    """Main posting function"""
+    print("Fetching new deals...")
+    deals = get_deals()
+    if not deals:
+        print("No new deals found.")
+        return
+
+    for deal in deals:
+        post_to_telegram(deal)
+        # mark as posted
+        posted_urls.add(deal)
+        time.sleep(10)  # slight delay between messages
+
+    print("✅ Posted new round of deals.")
+
+
+# Schedule every 10 minutes
+schedule.every(10).minutes.do(autopost)
+
+print("🚀 Autopost started... Running every 10 minutes.")
+autopost()  # run once at start
 
 while True:
-    post_deals()
-    print("✅ Posted 5 new deals.")
-    time.sleep(600)  # wait 10 minutes
+    schedule.run_pending()
+    time.sleep(30)
