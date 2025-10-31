@@ -1,173 +1,152 @@
 import os
-import requests
-import random
 import time
+import random
+import requests
 from bs4 import BeautifulSoup
-from flask import Flask
-import threading
+from dotenv import load_dotenv
+import schedule
 
-# -----------------------------------
-# 🔧 CONFIGURATION
-# -----------------------------------
-BOT_TOKEN = "8248716217:AAFlkDGIPGIIz1LHizS3OgSUdj94dp6C5-g"
-CHAT_ID = "-1003285979057"
-AFFILIATE_ID = "5bed0bdf3d1ca"
-BITLY_TOKEN = "77a3bc0d1d8e382c9dbd2b72efc8d748c0af814b"
+# Load environment variables
+load_dotenv()
 
-# -----------------------------------
-# 🌍 JUMIA CATEGORIES
-# -----------------------------------
-CATEGORIES = [
-    "https://www.jumia.co.ke/mlp-black-friday/",
-    "https://www.jumia.co.ke/smartphones/",
-    "https://www.jumia.co.ke/televisions/",
-    "https://www.jumia.co.ke/laptops/",
-    "https://www.jumia.co.ke/health-beauty/",
-    "https://www.jumia.co.ke/home-office/",
-    "https://www.jumia.co.ke/fashion-men/",
-    "https://www.jumia.co.ke/fashion-women/",
-    "https://www.jumia.co.ke/groceries/",
-    "https://www.jumia.co.ke/gaming/"
-]
+# === Your credentials ===
+TELEGRAM_BOT_TOKEN = "8248716217:AAFlkDGIPGIIz1LHizS3OgSUdj94dp6C5-g"
+TELEGRAM_CHAT_ID = "-1003285979057"
+BITLY_TOKEN ="77a3bc0d1d8e382c9dbd2b72efc8d748c0af814b"
+AFFILIATE_CODE = "5bed0bdf3d1ca"
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive"
-}
+POSTED_LINKS_FILE = "posted_links.txt"
 
-# -----------------------------------
-# 🔗 SHORTEN LINK WITH BITLY
-# -----------------------------------
+
+# === Bitly Shortener ===
 def shorten_link(long_url):
     try:
-        bitly_url = "https://api-ssl.bitly.com/v4/shorten"
         headers = {"Authorization": f"Bearer {BITLY_TOKEN}", "Content-Type": "application/json"}
-        payload = {"long_url": long_url}
-        response = requests.post(bitly_url, headers=headers, json=payload)
-        if response.status_code == 200:
-            return response.json()["link"]
-        else:
-            print("⚠️ Bitly error:", response.text)
-            return long_url
+        data = {"long_url": long_url}
+        r = requests.post("https://api-ssl.bitly.com/v4/shorten", json=data, headers=headers)
+        if r.status_code == 200:
+            return r.json()["link"]
     except Exception as e:
-        print("⚠️ Bitly shorten error:", e)
-        return long_url
+        print(f"⚠️ Bitly error: {e}")
+    return long_url
 
-# -----------------------------------
-# 🧩 SCRAPE TOP DEAL FROM CATEGORY
-# -----------------------------------
-def get_best_deal():
-    category = random.choice(CATEGORIES)
-    print(f"🔍 Checking category: {category}")
-    response = requests.get(category, headers=HEADERS)
-    soup = BeautifulSoup(response.text, "html.parser")
-    products = soup.select("article.prd")
 
-    if not products:
-        print("⚠️ No products found.")
-        return None
+# === Read/Save posted links ===
+def get_posted_links():
+    if not os.path.exists(POSTED_LINKS_FILE):
+        return set()
+    with open(POSTED_LINKS_FILE, "r") as f:
+        return set(f.read().splitlines())
 
-    best_deal = None
-    best_discount = 0
 
-    for prod in products:
+def save_posted_link(link):
+    with open(POSTED_LINKS_FILE, "a") as f:
+        f.write(link + "\n")
+
+
+# === Scrape Deals ===
+def scrape_deals(url):
+    print(f"🕵️ Scraping: {url}")
+    headers = {"User-Agent": "Mozilla/5.0"}
+    res = requests.get(url, headers=headers, timeout=10)
+    soup = BeautifulSoup(res.text, "html.parser")
+
+    deals = []
+    products = soup.find_all("a", class_="core", limit=40)
+
+    for p in products:
         try:
-            title_tag = prod.select_one("h3.name")
-            price_tag = prod.select_one("div.prc")
-            old_price_tag = prod.select_one("div.s-prc-w del")
-            discount_tag = prod.select_one("div.bdg._dsct")
-            link_tag = prod.find("a", href=True)
+            title = p.find("h3", class_="name").text.strip()
+            price = p.find("div", class_="prc").text.strip()
+            discount_tag = p.find("div", class_="bdg _dsct _sm")
+            discount = discount_tag.text.strip().replace("-", "").replace("%", "") if discount_tag else "0"
+            link = "https://www.jumia.co.ke" + p["href"]
 
-            if not title_tag or not price_tag or not link_tag:
-                continue
+            # ✅ Add affiliate code
+            if "?" in link:
+                link += f"&{AFFILIATE_CODE}"
+            else:
+                link += f"?{AFFILIATE_CODE}"
 
-            title = title_tag.text.strip()
-            price = price_tag.text.strip()
-            old_price = old_price_tag.text.strip() if old_price_tag else "N/A"
-            discount_text = discount_tag.text.strip() if discount_tag else "0%"
-            discount_value = int(discount_text.replace("%", "").replace("-", ""))
-
-            link = "https://www.jumia.co.ke" + link_tag["href"]
-            full_link = f"{link}?aff_id={AFFILIATE_ID}"
-
-            if discount_value > best_discount:
-                best_discount = discount_value
-                best_deal = {
-                    "title": title,
-                    "price": price,
-                    "old_price": old_price,
-                    "discount": f"{discount_value}%",
-                    "link": full_link
-                }
+            deals.append({
+                "title": title,
+                "price": price,
+                "discount": int(discount) if discount.isdigit() else 0,
+                "link": link
+            })
         except Exception:
             continue
 
-    if best_deal:
-        best_deal["short_link"] = shorten_link(best_deal["link"])
-    return best_deal
+    # Sort by top discounts
+    deals = sorted(deals, key=lambda x: x["discount"], reverse=True)
+    return deals[:5]
 
-# -----------------------------------
-# 💬 FORMAT MESSAGE
-# -----------------------------------
-def format_message(item):
-    return (
-        f"🛍️ <b>{item['title']}</b>\n"
-        f"💰 <b>{item['price']}</b> (was {item['old_price']}) 🔥 {item['discount']} OFF!\n"
-        f"⚡️ Top Deal of the Hour from Jumia!\n"
-        f"🔗 <a href=\"{item['short_link']}\">Shop Now</a>\n\n"
-        f"Powered by MediReach Digital Deals 🤖"
+
+# === Telegram Message Sender ===
+def send_telegram_message(deal):
+    short_link = shorten_link(deal["link"])
+    message = (
+        f"🔥 *{deal['title']}*\n"
+        f"💰 Price: {deal['price']}\n"
+        f"💸 Discount: {deal['discount']}% OFF\n\n"
+        f"👉 Get it here: {short_link}\n"
+        f"⚡️ #JumiaBlackFriday #Deals #Offers"
     )
 
-# -----------------------------------
-# 🚀 POST TO TELEGRAM
-# -----------------------------------
-def post_to_telegram(item):
-    message = format_message(item)
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = {
+        "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
-        "parse_mode": "HTML",
+        "parse_mode": "Markdown",
         "disable_web_page_preview": False
     }
 
-    response = requests.post(url, data=payload)
-    if response.status_code == 200:
-        print("✅ Deal posted successfully!")
+    r = requests.post(url, data=data)
+    if r.status_code == 200:
+        print(f"✅ Posted: {deal['title']}")
     else:
-        print("❌ Telegram post failed:", response.text)
+        print(f"❌ Failed: {deal['title']} — {r.text}")
 
-# -----------------------------------
-# 🕒 MAIN POST LOOP
-# -----------------------------------
-def run_poster():
-    while True:
-        print("⏳ Fetching top discount deal...")
-        deal = get_best_deal()
-        if deal:
-            post_to_telegram(deal)
-        else:
-            print("⚠️ No deal found this round.")
-        print("⏰ Sleeping for 1 hour...\n")
-        time.sleep(3600)
 
-# -----------------------------------
-# 🌐 KEEP-ALIVE SERVER (Render/Replit)
-# -----------------------------------
-app = Flask(__name__)
+# === Main Posting Function ===
+def post_deals():
+    print("🔁 Fetching new Jumia deals...")
+    categories = [
+        "https://www.jumia.co.ke/mlp-black-friday/",
+        "https://www.jumia.co.ke/phones-tablets/",
+        "https://www.jumia.co.ke/electronics/",
+        "https://www.jumia.co.ke/fashion/",
+        "https://www.jumia.co.ke/home-office/",
+        "https://www.jumia.co.ke/health-beauty/",
+        "https://www.jumia.co.ke/supermarket/",
+        "https://www.jumia.co.ke/baby-products/",
+        "https://www.jumia.co.ke/computing/",
+        "https://www.jumia.co.ke/gaming/"
+    ]
 
-@app.route('/')
-def home():
-    return "🚀 Jumia Auto Poster running — Powered by MediReach!"
+    random.shuffle(categories)
+    posted = get_posted_links()
 
-def run_server():
-    app.run(host="0.0.0.0", port=8080)
+    for category in categories:
+        deals = scrape_deals(category)
+        for deal in deals:
+            if deal["link"] not in posted:
+                send_telegram_message(deal)
+                save_posted_link(deal["link"])
+                posted.add(deal["link"])
+                time.sleep(random.randint(6, 15))
+        time.sleep(random.randint(10, 20))
 
-# -----------------------------------
-# 🏁 START EVERYTHING
-# -----------------------------------
-if __name__ == "__main__":
-    threading.Thread(target=run_server).start()
-    run_poster()
+    print("✅ Finished this round!")
+
+
+# === Scheduler (Every 10 minutes) ===
+schedule.every(10).minutes.do(post_deals)
+print("🤖 AutoPoster running! Posting every 10 minutes...")
+
+# Run immediately
+post_deals()
+
+while True:
+    schedule.run_pending()
+    time.sleep(5)
