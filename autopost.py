@@ -107,3 +107,13 @@ while True:
     except Exception as e:
         print("⚠️ Error:", e)
         time.sleep(600)
+from flask import Flask
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Autopost is running successfully!"
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=10000)
