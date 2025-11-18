@@ -1,7 +1,11 @@
+import os
 import requests
 import time
 import random
 import re
+import threading
+import schedule
+from flask import Flask
 
 # === CONFIGURATION ===
 BOT_TOKEN = "8248716217:AAFlkDGIPGIIz1LHizS3OgSUdj94dp6C5-g"
@@ -55,7 +59,7 @@ def fetch_all_deals():
             links = re.findall(r'href="(/[^"]+product/[^"]+)"', html)
             links = [f"https://www.jumia.co.ke{l}" for l in set(links)]
 
-            # Find discounts (like "40%")
+            # Find discounts
             discounts = [int(d.replace('%', '')) for d in re.findall(r'(\d+)%', html) if int(d.replace('%', '')) < 100]
 
             for link in links:
@@ -83,10 +87,10 @@ def post_top_20_deals():
         print("⚠️ No new deals found.")
         return
 
-    # Sort deals by discount descending (higher discount first)
+    # Sort deals by discount
     new_deals.sort(key=lambda x: x[1], reverse=True)
 
-    # Pick top 20 unique deals
+    # Pick top 20
     top_20 = new_deals[:20]
 
     for link, discount in top_20:
@@ -96,24 +100,39 @@ def post_top_20_deals():
         msg = f"🔥 {discount}% OFF | Jumia Deal\n{short_link}"
         post_to_telegram(msg)
         print(f"✅ Posted: {short_link}")
-        time.sleep(5)  # small delay between messages
+        time.sleep(5)
 
-# === MAIN LOOP ===
-print("🚀 Jumia Auto Poster running — 20 top deals every hour.")
-while True:
-    try:
-        post_top_20_deals()
-        time.sleep(3600)  # wait 1 hour
-    except Exception as e:
-        print("⚠️ Error:", e)
-        time.sleep(600)
-from flask import Flask
+# === SCHEDULER THREAD ===
+def run_scheduler():
+    print("⏳ Scheduler started… Running every hour.")
+    schedule.every(1).hours.do(post_top_20_deals)
 
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
+
+# === FLASK APP ===
 app = Flask(__name__)
 
-@app.route('/')
+@app.route("/")
 def home():
-    return "Autopost is running successfully!"
+    return """
+    <h1>✅ Autopost is running successfully!</h1>
+    <p>Deals are automatically posted every hour.</p>
+    """
 
+@app.route("/run-now")
+def manual_run():
+    post_top_20_deals()
+    return "Manual post job started!"
+
+# === MAIN ENTRY (REQUIRED FOR RENDER) ===
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000)
+    # Start autopost thread
+    t = threading.Thread(target=run_scheduler)
+    t.daemon = True
+    t.start()
+
+    # Run Flask on Render-assigned port
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
