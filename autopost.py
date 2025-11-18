@@ -2,14 +2,14 @@ import os
 import requests
 import time
 import random
-import re
 import threading
 import schedule
+from bs4 import BeautifulSoup
 from flask import Flask
 
 # === CONFIGURATION ===
 BOT_TOKEN = "8248716217:AAFlkDGIPGIIz1LHizS3OgSUdj94dp6C5-g"
-CHAT_ID = -1003285979057  # Correct numeric channel ID
+CHAT_ID = -1003285979057  # Numeric channel ID
 AFF_CODE = "5bed0bdf3d1ca"
 BITLY_TOKEN = "77a3bc0d1d8e382c9dbd2b72efc8d748c0af814b"
 
@@ -45,22 +45,28 @@ def shorten_url(long_url):
         print("⚠️ Bitly error:", e)
         return long_url
 
-# === SCRAPE DEALS ===
+# === SCRAPE DEALS USING BEAUTIFULSOUP ===
 def fetch_all_deals():
     deals = []
+    headers = {"User-Agent": "Mozilla/5.0"}
     for category in categories:
         try:
-            res = requests.get(category, timeout=10)
+            res = requests.get(category, timeout=10, headers=headers)
             if res.status_code != 200:
                 continue
-            html = res.text
+            soup = BeautifulSoup(res.text, "html.parser")
 
-            # Find product links
-            links = re.findall(r'href="(/[^"]+product/[^"]+)"', html)
-            links = [f"https://www.jumia.co.ke{l}" for l in set(links)]
+            # Get all product links
+            products = soup.select("a[data-brand]")
+            links = [f"https://www.jumia.co.ke{p['href']}" for p in products if 'href' in p.attrs]
 
-            # Find discounts
-            discounts = [int(d.replace('%', '')) for d in re.findall(r'(\d+)%', html) if int(d.replace('%', '')) < 100]
+            # Get all discounts
+            discounts_elements = soup.select(".bdg._dsct._sm")
+            discounts = []
+            for d in discounts_elements:
+                text = d.get_text(strip=True).replace('%', '')
+                if text.isdigit():
+                    discounts.append(int(text))
 
             for link in links:
                 discount = random.choice(discounts) if discounts else 0
@@ -105,7 +111,7 @@ def post_top_20_deals():
         msg = f"🔥 {discount}% OFF | Jumia Deal\n{short_link}"
         post_to_telegram(msg)
         print(f"✅ Posted: {short_link}")
-        time.sleep(5)  # delay between posts
+        time.sleep(5)
 
 # === SCHEDULER THREAD ===
 def run_scheduler():
