@@ -9,7 +9,7 @@ from flask import Flask
 
 # === CONFIGURATION ===
 BOT_TOKEN = "8248716217:AAFlkDGIPGIIz1LHizS3OgSUdj94dp6C5-g"
-CHAT_ID = "-1003285979057"
+CHAT_ID = -1003285979057  # Correct numeric channel ID
 AFF_CODE = "5bed0bdf3d1ca"
 BITLY_TOKEN = "77a3bc0d1d8e382c9dbd2b72efc8d748c0af814b"
 
@@ -73,7 +73,12 @@ def fetch_all_deals():
 def post_to_telegram(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     params = {"chat_id": CHAT_ID, "text": message}
-    requests.get(url, params=params)
+    try:
+        r = requests.get(url, params=params)
+        if r.status_code != 200:
+            print("⚠️ Telegram API error:", r.text)
+    except Exception as e:
+        print("⚠️ Exception posting to Telegram:", e)
 
 # === MAIN POSTING FUNCTION ===
 def post_top_20_deals():
@@ -87,10 +92,10 @@ def post_top_20_deals():
         print("⚠️ No new deals found.")
         return
 
-    # Sort deals by discount
+    # Sort deals by discount descending
     new_deals.sort(key=lambda x: x[1], reverse=True)
 
-    # Pick top 20
+    # Pick top 20 deals
     top_20 = new_deals[:20]
 
     for link, discount in top_20:
@@ -100,13 +105,12 @@ def post_top_20_deals():
         msg = f"🔥 {discount}% OFF | Jumia Deal\n{short_link}"
         post_to_telegram(msg)
         print(f"✅ Posted: {short_link}")
-        time.sleep(5)
+        time.sleep(5)  # delay between posts
 
 # === SCHEDULER THREAD ===
 def run_scheduler():
     print("⏳ Scheduler started… Running every hour.")
     schedule.every(1).hours.do(post_top_20_deals)
-
     while True:
         schedule.run_pending()
         time.sleep(1)
@@ -128,7 +132,11 @@ def manual_run():
 
 # === MAIN ENTRY (REQUIRED FOR RENDER) ===
 if __name__ == '__main__':
-    # Start autopost thread
+    # 🚀 Post deals immediately on startup
+    print("🚀 Posting top 20 deals immediately...")
+    post_top_20_deals()
+
+    # Start scheduler thread
     t = threading.Thread(target=run_scheduler)
     t.daemon = True
     t.start()
