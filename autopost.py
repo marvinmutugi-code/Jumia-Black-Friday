@@ -4,12 +4,13 @@ import time
 import random
 import threading
 import schedule
-from bs4 import BeautifulSoup
 from flask import Flask
+import json
+import re
 
 # === CONFIGURATION ===
 BOT_TOKEN = "8248716217:AAFlkDGIPGIIz1LHizS3OgSUdj94dp6C5-g"
-CHAT_ID = -1003285979057  # Numeric channel ID
+CHAT_ID = -1003285979057  # Numeric Telegram channel ID
 AFF_CODE = "5bed0bdf3d1ca"
 BITLY_TOKEN = "77a3bc0d1d8e382c9dbd2b72efc8d748c0af814b"
 
@@ -45,34 +46,33 @@ def shorten_url(long_url):
         print("⚠️ Bitly error:", e)
         return long_url
 
-# === SCRAPE DEALS USING BEAUTIFULSOUP ===
+# === FETCH DEALS USING JUMIA JSON DATA ===
 def fetch_all_deals():
     deals = []
     headers = {"User-Agent": "Mozilla/5.0"}
+
     for category in categories:
         try:
-            res = requests.get(category, timeout=10, headers=headers)
+            res = requests.get(category, headers=headers, timeout=10)
             if res.status_code != 200:
                 continue
-            soup = BeautifulSoup(res.text, "html.parser")
 
-            # Get all product links
-            products = soup.select("a[data-brand]")
-            links = [f"https://www.jumia.co.ke{p['href']}" for p in products if 'href' in p.attrs]
+            # Extract JSON data embedded in the page
+            match = re.search(r'window\.__PRELOADED_STATE__\s*=\s*(\{.*\});', res.text)
+            if not match:
+                continue
 
-            # Get all discounts
-            discounts_elements = soup.select(".bdg._dsct._sm")
-            discounts = []
-            for d in discounts_elements:
-                text = d.get_text(strip=True).replace('%', '')
-                if text.isdigit():
-                    discounts.append(int(text))
+            data = json.loads(match.group(1))
+            products = data.get("listings", {}).get("products", [])
 
-            for link in links:
-                discount = random.choice(discounts) if discounts else 0
+            for p in products:
+                link = "https://www.jumia.co.ke" + p.get("url", "")
+                discount = p.get("discount", 0)
                 deals.append((link, discount))
+
         except Exception as e:
             print("⚠️ Error fetching category:", e)
+
     return deals
 
 # === POST TO TELEGRAM ===
