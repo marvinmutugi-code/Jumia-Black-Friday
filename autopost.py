@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """
-autopost.py - Full Jumia Smart Scraper Engine (Mode B+ Updated)
+autopost.py - Jumia Smart Scraper Engine (Mode B+ Updated for hidden clickable links)
 
 Features:
-- Scrapes Flash Sales, Deals, Top Selling, Black Friday hub, Treasure / Hidden deals & vouchers, compact categories.
+- Scrapes Flash Sales, Deals, Top Selling, Black Friday, Treasure/Vouchers, and categories.
 - Prioritizes high-discount and fast-moving items.
-- Uses Jumia kol redirect affiliate format + Bitly shortening (robust).
-- Posts product image + caption (HTML) to Telegram via sendPhoto.
-- Persists posted hashes to posted_hashes.json.
-- /test and /trigger endpoints.
-- Robust error handling and logging.
+- Uses Jumia kol affiliate links + Bitly shortening.
+- Posts product image + caption to Telegram with hidden clickable "Shop Now" links.
+- Avoids reposting the same deal using hash persistence.
+- Scheduler + Flask endpoints (/test, /trigger).
 """
 
 import os
@@ -25,7 +24,7 @@ from flask import Flask, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 
 # -------------------------
-# Configuration (env preferred)
+# Configuration
 # -------------------------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or "8248716217:AAFlkDGIPGIIz1LHizS3OgSUdj94dp6C5-g"
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID") or "-1003285979057"
@@ -102,8 +101,7 @@ def item_hash(item: dict) -> str:
     return sha256(s).hexdigest()
 
 def escape_html(text: str) -> str:
-    if not text:
-        return ""
+    if not text: return ""
     return (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;"))
 
 def fetch_html(url: str, timeout=12) -> str:
@@ -185,7 +183,6 @@ def make_kol_affiliate_url(product_url: str) -> str:
 
 def shorten_with_bitly(long_url: str) -> str:
     if not BITLY_TOKEN:
-        logger.warning("BITLY_TOKEN missing, returning long URL")
         return long_url
     endpoint = "https://api-ssl.bitly.com/v4/shorten"
     headers = {"Authorization": f"Bearer {BITLY_TOKEN}", "Content-Type": "application/json"}
@@ -195,9 +192,8 @@ def shorten_with_bitly(long_url: str) -> str:
         data = r.json()
         if r.status_code in (200, 201) and "link" in data:
             return data["link"]
-        else:
-            logger.warning("Bitly failed %s: %s", r.status_code, r.text)
-            return long_url
+        logger.warning("Bitly failed %s: %s", r.status_code, r.text)
+        return long_url
     except Exception as e:
         logger.exception("Bitly exception: %s", e)
         return long_url
@@ -228,20 +224,19 @@ def fetch_categories_compact():
 # Aggregator
 # -------------------------
 def aggregate_candidates() -> list:
-    logger.info("Aggregating candidates from Mode B+ sources...")
     candidates = []
     try: candidates.extend(fetch_flash_sales())
-    except Exception: logger.exception("flash failed")
+    except: logger.exception("flash failed")
     try: candidates.extend(fetch_deals_page())
-    except Exception: logger.exception("deals failed")
+    except: logger.exception("deals failed")
     try: candidates.extend(fetch_top_selling())
-    except Exception: logger.exception("top selling failed")
+    except: logger.exception("top selling failed")
     try: candidates.extend(fetch_black_friday())
-    except Exception: logger.exception("black friday failed")
+    except: logger.exception("black friday failed")
     try: candidates.extend(fetch_vouchers_and_treasure())
-    except Exception: logger.exception("vouchers/treasure failed")
+    except: logger.exception("vouchers/treasure failed")
     try: candidates.extend(fetch_categories_compact())
-    except Exception: logger.exception("categories failed")
+    except: logger.exception("categories failed")
 
     # dedupe
     unique = {}
@@ -251,11 +246,12 @@ def aggregate_candidates() -> list:
             unique[u] = it
     unique_items = list(unique.values())
 
+    # scoring: prefer discount / old_price
     def score(it):
         s = 0
         if it.get("discount"):
             try: digits = "".join(ch for ch in it["discount"] if ch.isdigit() or ch=="."); s+=float(digits) if digits else 5
-            except Exception: s+=5
+            except: s+=5
         if it.get("old_price"): s+=3
         if it.get("price") and it.get("title"): s+=1
         return s
@@ -264,30 +260,33 @@ def aggregate_candidates() -> list:
     return scored[: max(POST_LIMIT_PER_RUN*3, 50)]
 
 # -------------------------
-# Build caption
+# Build caption with hidden link
 # -------------------------
 def build_caption(it: dict) -> str:
     title = escape_html(it.get("title") or "No title")
     price = escape_html(it.get("price") or "")
     old = escape_html(it.get("old_price") or "")
     discount = escape_html(it.get("discount") or "")
-    parts = [f"🔥 <b>{title}</b>"]
-    if price: parts.append(f"💰 Price: <b>{price}</b>")
-    if old: parts.append(f"❌ Was: {old}")
-    if discount: parts.append(f"💥 Discount: {discount}")
-    kol = make_kol_affiliate_url(it.get("url"))
-    short = shorten_with_bitly(kol)
-    parts.append(f"🛒 BUY NOW ➜ {short}")
-    parts.append(f"<i>Posted: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%SZ')}</i>")
+    parts = []
+    parts.append(f"🔥 <b>{title}</b>")
+    if price:
+        parts.append(f"💰 {price}" + (f" (was {old})" if old else ""))
+    if discount:
+        parts.append(f"🔥 {discount} OFF!")
+    parts.append("⚡️ Top Deal of the Hour from Jumia!")
+
+    kol_url = make_kol_affiliate_url(it.get("url"))
+    short_url = shorten_with_bitly(kol_url)
+
+    # Hidden clickable link
+    parts.append(f'🔗 <a href="{short_url}">Shop Now</a>')
     return "\n".join(parts)
 
 # -------------------------
 # Telegram send
 # -------------------------
 def send_photo_with_caption(image_url: str, caption: str) -> bool:
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.error("Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID")
-        return False
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: return False
     endpoint = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
     try:
         rimg = requests.get(image_url, headers=HEADERS, timeout=12, stream=True)
