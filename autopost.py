@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-autopost.py - Jumia Smart Scraper Engine (Mode B+ Updated for hidden clickable links)
+autopost.py - Jumia Smart Scraper Engine (Mode B+ Updated)
 
 Features:
 - Scrapes Flash Sales, Deals, Top Selling, Black Friday, Treasure/Vouchers, and categories.
 - Prioritizes high-discount and fast-moving items.
-- Uses Jumia kol affiliate links + Bitly shortening.
+- Uses Jumia kol affiliate redirect links + Bitly shortening.
 - Posts product image + caption to Telegram with hidden clickable "Shop Now" links.
 - Avoids reposting the same deal using hash persistence.
 - Scheduler + Flask endpoints (/test, /trigger).
@@ -26,10 +26,10 @@ from apscheduler.schedulers.background import BackgroundScheduler
 # -------------------------
 # Configuration
 # -------------------------
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or "8248716217:AAFlkDGIPGIIz1LHizS3OgSUdj94dp6C5-g"
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID") or "-1003285979057"
-AFF_ID = os.getenv("AFF_CODE") or "5bed0bdf3d1ca"
-BITLY_TOKEN = os.getenv("BITLY_TOKEN") or "77a3bc0d1d8e382c9dbd2b72efc8d748c0af814b"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or "YOUR_TELEGRAM_TOKEN"
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID") or "YOUR_CHAT_ID"
+AFF_ID = os.getenv("AFF_CODE") or "YOUR_AFF_ID"
+BITLY_TOKEN = os.getenv("BITLY_TOKEN") or "YOUR_BITLY_TOKEN"
 
 JUMIA_BASE = "https://www.jumia.co.ke"
 FLASH_SALES = "https://www.jumia.co.ke/flash-sales/"
@@ -173,9 +173,12 @@ def fetch_listing(url: str, limit=10) -> list:
 # Affiliate & Bitly
 # -------------------------
 def make_kol_affiliate_url(product_url: str) -> str:
+    """
+    Correct Kol.jumia affiliate redirect.
+    """
     try:
         encoded = quote(product_url, safe='')
-        kol = f"https://kol.jumia.com/api/click/banner_id/48233/aff_id/{AFF_ID}?redirect={encoded}"
+        kol = f"https://kol.jumia.com/redirect?aff_id={AFF_ID}&url={encoded}"
         return kol
     except Exception as e:
         logger.exception("make_kol_affiliate_url error: %s", e)
@@ -199,7 +202,7 @@ def shorten_with_bitly(long_url: str) -> str:
         return long_url
 
 # -------------------------
-# High-level fetchers
+# Fetchers
 # -------------------------
 def fetch_flash_sales(): return fetch_listing(FLASH_SALES, ITEMS_PER_SOURCE)
 def fetch_deals_page(): return fetch_listing(DEALS_PAGE, ITEMS_PER_SOURCE)
@@ -260,7 +263,7 @@ def aggregate_candidates() -> list:
     return scored[: max(POST_LIMIT_PER_RUN*3, 50)]
 
 # -------------------------
-# Build caption with hidden link
+# Build caption
 # -------------------------
 def build_caption(it: dict) -> str:
     title = escape_html(it.get("title") or "No title")
@@ -278,7 +281,6 @@ def build_caption(it: dict) -> str:
     kol_url = make_kol_affiliate_url(it.get("url"))
     short_url = shorten_with_bitly(kol_url)
 
-    # Hidden clickable link
     parts.append(f'🔗 <a href="{short_url}">Shop Now</a>')
     return "\n".join(parts)
 
@@ -342,14 +344,11 @@ def post_deals_job():
 # Flask endpoints
 # -------------------------
 @app.route("/")
-def index():
-    return jsonify({"status": "ok", "time": datetime.utcnow().isoformat()+"Z"})
-
+def index(): return jsonify({"status":"ok","time":datetime.utcnow().isoformat()+"Z"})
 @app.route("/test")
 def test_endpoint():
     ok = send_message("🚀 Test message from autopost bot at "+datetime.utcnow().isoformat()+"Z")
     return jsonify({"sent": ok})
-
 @app.route("/trigger")
 def trigger_endpoint():
     post_deals_job()
@@ -365,7 +364,7 @@ def start_scheduler():
 # Run
 # -------------------------
 if __name__ == "__main__":
-    logger.info("Starting Autopost (Mode B+ Updated)...")
+    logger.info("Starting Autopost (Mode B+ Updated Kol redirect)...")
     start_scheduler()
     port = int(os.getenv("PORT") or os.getenv("RENDER_PORT") or 10000)
     app.run(host="0.0.0.0", port=port)
