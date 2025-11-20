@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """
-autopost.py - Jumia Smart Scraper Engine (Mode B+ Updated)
+autopost.py - Jumia Smart Scraper Engine (Dynamic URLs)
 
 Features:
-- Scrapes Flash Sales, Deals, Top Selling, Black Friday, Treasure/Vouchers, and categories.
+- Dynamically fetches current categories, deals, flash sales, Black Friday pages.
 - Prioritizes high-discount and fast-moving items.
 - Uses Jumia kol affiliate redirect links + Bitly shortening.
-- Posts product image + caption to Telegram with hidden clickable "Shop Now" links.
+- Posts product image + caption to Telegram with clickable "Shop Now" links.
 - Avoids reposting the same deal using hash persistence.
 - Scheduler + Flask endpoints (/test, /trigger).
 """
 
 import os
+import sys
 import time
 import json
 import logging
@@ -29,21 +30,9 @@ from apscheduler.schedulers.background import BackgroundScheduler
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or "YOUR_TELEGRAM_TOKEN"
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID") or "YOUR_CHAT_ID"
 AFF_ID = os.getenv("AFF_CODE") or "YOUR_AFF_ID"
-BITLY_TOKEN = "b61d8f44a9084b6309edb381b66654496a09292d"  # New token
+BITLY_TOKEN = os.getenv("BITLY_TOKEN") or "b61d8f44a9084b6309edb381b66654496a09292d"
 
 JUMIA_BASE = "https://www.jumia.co.ke"
-FLASH_SALES = "https://www.jumia.co.ke/flash-sales/"
-DEALS_PAGE = "https://www.jumia.co.ke/deals/"
-TOP_SELLING = "https://www.jumia.co.ke/top-selling/"
-BLACK_FRIDAY = "https://www.jumia.co.ke/black-friday/"
-VOUCHERS_PAGE = "https://www.jumia.co.ke/black-friday-vouchers/"
-TREASURE_PAGE = "https://www.jumia.co.ke/black-friday-treasure-hunt/"
-
-CATEGORIES = [
-    "phones-tablets", "computing", "tv-video", "home-appliances",
-    "home-office", "fashion", "beauty-health", "groceries",
-    "gaming", "kitchen-dining"
-]
 
 POST_LIMIT_PER_RUN = int(os.getenv("POST_LIMIT_PER_RUN", "20"))
 ITEMS_PER_SOURCE = int(os.getenv("ITEMS_PER_SOURCE", "10"))
@@ -117,6 +106,42 @@ def fetch_html(url: str, timeout=12) -> str:
         return ""
 
 # -------------------------
+# Dynamic URL fetching
+# -------------------------
+def fetch_jumia_current_urls():
+    html = fetch_html(JUMIA_BASE)
+    if not html:
+        return [], [], []
+
+    soup = BeautifulSoup(html, "html.parser")
+    categories = []
+    deals_pages = []
+    special_pages = []
+
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if href.startswith("/"):
+            full_url = JUMIA_BASE + href.lstrip("/")
+            # Categorize
+            if any(x in href for x in ["flash-sales", "deals", "black-friday"]):
+                deals_pages.append(full_url)
+            elif any(x in href for x in ["phones-tablets", "fashion", "beauty-health", "computing",
+                                         "tv-video", "home-appliances", "home-office",
+                                         "groceries", "gaming", "kitchen-dining"]):
+                categories.append(full_url)
+            else:
+                special_pages.append(full_url)
+
+    # Deduplicate
+    categories = list(set(categories))
+    deals_pages = list(set(deals_pages))
+    special_pages = list(set(special_pages))
+
+    logger.info("Fetched %d categories, %d deal pages, %d special pages",
+                len(categories), len(deals_pages), len(special_pages))
+    return categories, deals_pages, special_pages
+
+# -------------------------
 # Parsing helpers
 # -------------------------
 def parse_products_from_soup(soup) -> list:
@@ -146,7 +171,7 @@ def parse_products_from_soup(soup) -> list:
             a = card.select_one("a")
             href = a.get("href") if a and a.get("href") else None
             if href and href.startswith("/"):
-                href = JUMIA_BASE.rstrip("/") + "/" + href.lstrip("/")
+                href = JUMIA_BASE + href.lstrip("/")
             if not href or not title:
                 continue
             items.append({
@@ -184,10 +209,10 @@ def make_kol_affiliate_url(product_url: str) -> str:
 def shorten_with_bitly(long_url: str) -> str:
     if not BITLY_TOKEN:
         return long_url
+    endpoint = "https://api-ssl.bitly.com/v4/shorten"
+    headers = {"Authorization": f"Bearer {BITLY_TOKEN}", "Content-Type": "application/json"}
+    payload = {"long_url": long_url}
     try:
-        endpoint = "https://api-ssl.bitly.com/v4/shorten"
-        headers = {"Authorization": f"Bearer {BITLY_TOKEN}", "Content-Type": "application/json"}
-        payload = {"long_url": long_url}
         r = requests.post(endpoint, json=payload, headers=headers, timeout=10)
         data = r.json()
         if r.status_code in (200, 201) and "link" in data:
@@ -199,52 +224,38 @@ def shorten_with_bitly(long_url: str) -> str:
         return long_url
 
 # -------------------------
-# Fetchers
-# -------------------------
-def fetch_flash_sales(): return fetch_listing(FLASH_SALES, ITEMS_PER_SOURCE)
-def fetch_deals_page(): return fetch_listing(DEALS_PAGE, ITEMS_PER_SOURCE)
-def fetch_top_selling(): return fetch_listing(TOP_SELLING, ITEMS_PER_SOURCE)
-def fetch_black_friday(): return fetch_listing(BLACK_FRIDAY, ITEMS_PER_SOURCE)
-def fetch_vouchers_and_treasure():
-    out = []
-    out.extend(fetch_listing(VOUCHERS_PAGE, ITEMS_PER_SOURCE))
-    out.extend(fetch_listing(TREASURE_PAGE, ITEMS_PER_SOURCE))
-    return out
-def fetch_categories_compact():
-    all_items = []
-    for c in CATEGORIES:
-        try:
-            u = f"{JUMIA_BASE.rstrip('/')}/{c}/"
-            all_items.extend(fetch_listing(u, ITEMS_PER_SOURCE))
-        except Exception:
-            logger.exception("Category fetch failed: %s", c)
-    return all_items
-
-# -------------------------
 # Aggregator
 # -------------------------
 def aggregate_candidates() -> list:
     candidates = []
-    try: candidates.extend(fetch_flash_sales())
-    except: logger.exception("flash failed")
-    try: candidates.extend(fetch_deals_page())
-    except: logger.exception("deals failed")
-    try: candidates.extend(fetch_top_selling())
-    except: logger.exception("top selling failed")
-    try: candidates.extend(fetch_black_friday())
-    except: logger.exception("black friday failed")
-    try: candidates.extend(fetch_vouchers_and_treasure())
-    except: logger.exception("vouchers/treasure failed")
-    try: candidates.extend(fetch_categories_compact())
-    except: logger.exception("categories failed")
+    categories, deals_pages, special_pages = fetch_jumia_current_urls()
 
-    # dedupe & filter login/category pages
+    # Fetch deals first
+    for url in deals_pages:
+        try:
+            candidates.extend(fetch_listing(url, ITEMS_PER_SOURCE))
+        except Exception:
+            logger.exception("Deal page fetch failed: %s", url)
+
+    # Fetch categories
+    for url in categories:
+        try:
+            candidates.extend(fetch_listing(url, ITEMS_PER_SOURCE))
+        except Exception:
+            logger.exception("Category fetch failed: %s", url)
+
+    # Optional: fetch any other special pages
+    for url in special_pages:
+        try:
+            candidates.extend(fetch_listing(url, ITEMS_PER_SOURCE))
+        except Exception:
+            logger.exception("Special page fetch failed: %s", url)
+
+    # Deduplicate
     unique = {}
     for it in candidates:
         u = it.get("url")
-        if not u or "/customer/account/login" in u or "/category-" in u:
-            continue
-        if u not in unique:
+        if u and u not in unique:
             unique[u] = it
     unique_items = list(unique.values())
 
@@ -363,7 +374,7 @@ def start_scheduler():
 # Run
 # -------------------------
 if __name__ == "__main__":
-    logger.info("Starting Autopost (Mode B+ Updated Kol redirect)...")
+    logger.info("Starting Autopost (Dynamic Jumia URLs + Kol redirect)...")
     start_scheduler()
     port = int(os.getenv("PORT") or os.getenv("RENDER_PORT") or 10000)
     app.run(host="0.0.0.0", port=port)
